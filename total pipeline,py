@@ -1,0 +1,693 @@
+# =============================================================
+# DWAE Projekt – Phase 7: Automatisierte Pipeline
+# Thema: Einfluss von Wetter auf Luftqualität in Zürich
+# =============================================================
+# Diese Pipeline führt alle Phasen 1-6 automatisch durch.
+# Ausführen: python W07_pipeline.py
+#
+# Optionen:
+#   python W07_pipeline.py --ab-phase 3   (ab Phase 3 starten)
+#   python W07_pipeline.py --nur-phase 6  (nur Phase 6)
+# =============================================================
+
+import sys
+import time
+import traceback
+import argparse
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.gridspec as gridspec
+import json
+import hashlib
+from pathlib import Path
+from datetime import datetime
+from io import StringIO
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+# ─────────────────────────────────────────────────────────────
+# KONFIGURATION – hier anpassen falls nötig
+# ─────────────────────────────────────────────────────────────
+CONFIG = {
+    # Zeitraum
+    "start_date": "2023-01-01",
+    "end_date":   "2023-12-31",
+
+    # Zürich Koordinaten
+    "latitude":  47.3769,
+    "longitude": 8.5417,
+    "timezone":  "Europe/Zurich",
+
+    # Datenquellen
+    "luft_url": (
+        "https://data.stadt-zuerich.ch/dataset/"
+        "ugz_luftschadstoffmessung_stundenwerte/download/"
+        "ugz_ogd_air_h1_2023.csv"
+    ),
+    "luft_lokal": "data/raw/ugz_ogd_air_h1_2023.csv",
+
+    # Qualitätsschwellen
+    "min_merge_quote":        80.0,   # % erfolgreicher Merge
+    "min_zeitvollstaendigkeit": 95.0, # % Zeitindex vollständig
+    "max_missing_pct":        20.0,   # % fehlende Werte pro Spalte
+    "max_interpolation_luecke": 3,    # Stunden
+
+    # Physikalische Grenzen Wetter
+    "wetter_grenzen": {
+        "temperature_2m":       (-30, 45),
+        "relative_humidity_2m": (0, 100),
+        "precipitation":        (0, 150),
+        "wind_speed_10m":       (0, 200),
+        "surface_pressure":     (920, 1060),
+        "cloud_cover":          (0, 100),
+        "sunshine_duration":    (0, 3600),
+    },
+}
+
+FARBEN = {
+    "blau":  "#185FA5", "gruen":  "#1D9E75",
+    "rot":   "#D85A30", "lila":   "#534AB7",
+    "gelb":  "#C89B1C", "grau":   "#6B7280",
+}
+JAHRESZEIT_FARBEN = {
+    "Winter": "#185FA5", "Frühling": "#1D9E75",
+    "Sommer": "#D85A30", "Herbst":   "#C89B1C",
+}
+
+plt.rcParams.update({
+    "font.family": "sans-serif", "font.size": 10,
+    "axes.titlesize": 11,
+    "axes.spines.top": False, "axes.spines.right": False,
+})
+
+
+# ─────────────────────────────────────────────────────────────
+# PIPELINE-PROTOKOLL
+# ─────────────────────────────────────────────────────────────
+protokoll = {
+    "gestartet":  datetime.now().isoformat(),
+    "config":     CONFIG,
+    "phasen":     {},
+    "fehler":     [],
+    "warnungen":  [],
+}
+
+def log(msg, ebene="INFO"):
+    prefix = {"INFO": "  ", "OK": "  ✓", "WARN": "  ⚠",
+              "ERR": "  ✗", "HEAD": "\n"}
+    print(f"{prefix.get(ebene, '  ')} {msg}")
+    if ebene == "WARN":
+        protokoll["warnungen"].append(msg)
+    elif ebene == "ERR":
+        protokoll["fehler"].append(msg)
+
+def phase_start(nr, name):
+    print(f"\n{'='*60}")
+    print(f"PHASE {nr} – {name}")
+    print(f"{'='*60}")
+    protokoll["phasen"][nr] = {"name": name, "start": datetime.now().isoformat()}
+    return time.time()
+
+def phase_ende(nr, t_start, zeilen=None):
+    dauer = time.time() - t_start
+    info  = {"dauer_s": round(dauer, 2), "status": "OK"}
+    if zeilen:
+        info["zeilen"] = zeilen
+    protokoll["phasen"][nr].update(info)
+    log(f"Phase {nr} abgeschlossen in {dauer:.1f}s", "OK")
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 1: DATENBESCHAFFUNG
+# ═════════════════════════════════════════════════════════════
+def phase1_datenbeschaffung():
+    t = phase_start(1, "Datenbeschaffung")
+    Path("data/raw").mkdir(parents=True, exist_ok=True)
+
+    # ── Luftqualität ──
+    log("Lade Luftqualitätsdaten (OGD Stadt Zürich)...")
+    df_luft = None
+
+    try:
+        r = requests.get(CONFIG["luft_url"], timeout=30,
+                         headers={"User-Agent": "FHNW-DataWrangling"})
+        r.raise_for_status()
+        df_luft = pd.read_csv(StringIO(r.text))
+        df_luft.to_csv("data/raw/luftqualitaet_2023_roh.csv", index=False)
+        log(f"Luftqualität geladen: {df_luft.shape[0]:,} Zeilen", "OK")
+    except Exception:
+        log("Direkter Download fehlgeschlagen → versuche lokale Datei", "WARN")
+        lok = Path(CONFIG["luft_lokal"])
+        if lok.exists():
+            df_luft = pd.read_csv(lok)
+            log(f"Lokale Datei geladen: {df_luft.shape[0]:,} Zeilen", "OK")
+        else:
+            log("Keine Luftqualitätsdaten verfügbar! "
+                f"Bitte manuell speichern: {CONFIG['luft_lokal']}", "ERR")
+            raise FileNotFoundError("Luftqualitätsdaten fehlen")
+
+    # ── Wetterdaten ──
+    log("Lade Wetterdaten (Open-Meteo API)...")
+    wetter_params = {
+        "latitude":   CONFIG["latitude"],
+        "longitude":  CONFIG["longitude"],
+        "start_date": CONFIG["start_date"],
+        "end_date":   CONFIG["end_date"],
+        "hourly": [
+            "temperature_2m", "relative_humidity_2m",
+            "precipitation", "wind_speed_10m", "wind_direction_10m",
+            "surface_pressure", "cloud_cover", "sunshine_duration",
+        ],
+        "timezone": CONFIG["timezone"],
+    }
+    r = requests.get("https://archive-api.open-meteo.com/v1/archive",
+                     params=wetter_params, timeout=60)
+    r.raise_for_status()
+    wetter_json = r.json()
+    df_wetter = pd.DataFrame(wetter_json["hourly"]).rename(
+        columns={"time": "Datum"})
+    df_wetter.to_csv("data/raw/wetter_2023_roh.csv", index=False)
+    log(f"Wetter geladen: {df_wetter.shape[0]:,} Zeilen, "
+        f"{df_wetter['Datum'].min()} – {df_wetter['Datum'].max()}", "OK")
+
+    phase_ende(1, t, zeilen=len(df_luft))
+    return df_luft, df_wetter
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 2: EXPLORATIVE DATENANALYSE
+# ═════════════════════════════════════════════════════════════
+def phase2_eda(df_luft, df_wetter):
+    t = phase_start(2, "Explorative Datenanalyse (EDA)")
+    Path("output/plots").mkdir(parents=True, exist_ok=True)
+
+    for name, df in [("Luftqualität", df_luft), ("Wetter", df_wetter)]:
+        num_cols = df.select_dtypes(include="number").columns
+        nan_total = df[num_cols].isnull().sum().sum()
+        nan_pct   = nan_total / (len(df) * len(num_cols)) * 100
+        dups      = df.duplicated().sum()
+        log(f"{name}: {df.shape}, NaN={nan_total} ({nan_pct:.1f}%), "
+            f"Duplikate={dups}")
+        if nan_pct > CONFIG["max_missing_pct"]:
+            log(f"{name}: Hoher Anteil fehlender Werte ({nan_pct:.1f}%)", "WARN")
+
+    phase_ende(2, t)
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 3: DATENBEREINIGUNG
+# ═════════════════════════════════════════════════════════════
+def phase3_bereinigung(df_luft, df_wetter):
+    t = phase_start(3, "Datenbereinigung")
+    Path("data/processed").mkdir(parents=True, exist_ok=True)
+
+    dl = df_luft.copy()
+    dw = df_wetter.copy()
+
+    # Zeitstempel parsen
+    dl.rename(columns={dl.columns[0]: "timestamp"}, inplace=True)
+    dl["timestamp"] = pd.to_datetime(dl["timestamp"])
+    dw["Datum"]     = pd.to_datetime(dw["Datum"])
+
+    # Duplikate
+    for df, col in [(dl, "timestamp"), (dw, "Datum")]:
+        n = df.duplicated(subset=[col]).sum()
+        df.drop_duplicates(subset=[col], keep="first", inplace=True)
+        if n:
+            log(f"Duplikate entfernt: {n}", "WARN")
+
+    # Physikalische Grenzen Wetter
+    ersetzt = 0
+    for col, (mn, mx) in CONFIG["wetter_grenzen"].items():
+        if col in dw.columns:
+            mask = (dw[col] < mn) | (dw[col] > mx)
+            ersetzt += mask.sum()
+            dw.loc[mask, col] = np.nan
+    log(f"Wetter: {ersetzt} physikalisch unmögliche Werte → NaN")
+
+    # Negative Schadstoffwerte (physikalisch unmöglich)
+    luft_num = dl.select_dtypes(include="number").columns
+    neg = 0
+    for col in luft_num:
+        mask = dl[col] < 0
+        neg += mask.sum()
+        dl.loc[mask, col] = np.nan
+    log(f"Luftqualität: {neg} negative Werte → NaN")
+
+    # Indikatorvariablen (vor Interpolation!)
+    for col in luft_num:
+        if dl[col].isnull().sum() > 0:
+            dl[f"{col}_missing"] = dl[col].isnull().astype(int)
+    for col in dw.select_dtypes(include="number").columns:
+        if dw[col].isnull().sum() > 0:
+            dw[f"{col}_missing"] = dw[col].isnull().astype(int)
+    log("Indikatorvariablen (_missing) erstellt")
+
+    # Kurze Lücken interpolieren
+    lim = CONFIG["max_interpolation_luecke"]
+    vor = dl[luft_num].isnull().sum().sum()
+    for col in luft_num:
+        dl[col] = dl[col].interpolate(method="linear", limit=lim,
+                                      limit_direction="forward")
+    nach = dl[luft_num].isnull().sum().sum()
+    log(f"Luftqualität: {vor - nach} Werte interpoliert "
+        f"(≤{lim}h), {nach} NaN verbleiben")
+
+    dl.to_csv("data/processed/luftqualitaet_2023_clean.csv", index=False)
+    dw.to_csv("data/processed/wetter_2023_clean.csv", index=False)
+    log("Gespeichert: data/processed/*_clean.csv", "OK")
+
+    phase_ende(3, t, zeilen=len(dl))
+    return dl, dw
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 4: TRANSFORMATION & MERGE
+# ═════════════════════════════════════════════════════════════
+def phase4_transformation(dl, dw):
+    t = phase_start(4, "Datentransformation & Merge")
+
+    # Zeitstempel vereinheitlichen
+    dl["timestamp"] = pd.to_datetime(dl["timestamp"]).dt.floor("h")
+    dw["Datum"]     = pd.to_datetime(dw["Datum"]).dt.floor("h")
+
+    def setze_tz(s):
+        return (s.dt.tz_localize(CONFIG["timezone"],
+                                 ambiguous="infer",
+                                 nonexistent="shift_forward")
+                if s.dt.tz is None else s.dt.tz_convert(CONFIG["timezone"]))
+
+    dl["timestamp"] = setze_tz(dl["timestamp"])
+    dw["Datum"]     = setze_tz(dw["Datum"])
+
+    # Merge
+    df = pd.merge(dl, dw.rename(columns={"Datum": "timestamp"}),
+                  on="timestamp", how="inner").sort_values("timestamp")
+    merge_q = len(df) / max(len(dl), len(dw)) * 100
+    log(f"Merge: {len(df):,} Stunden ({merge_q:.1f}%)")
+    if merge_q < CONFIG["min_merge_quote"]:
+        log(f"Merge-Quote unter Schwellenwert ({CONFIG['min_merge_quote']}%)", "WARN")
+
+    # Feature Engineering
+    df["stunde"]            = df["timestamp"].dt.hour
+    df["wochentag"]         = df["timestamp"].dt.dayofweek
+    df["monat"]             = df["timestamp"].dt.month
+    df["jahreszeit"]        = df["monat"].map({
+        12:"Winter",1:"Winter",2:"Winter",
+        3:"Frühling",4:"Frühling",5:"Frühling",
+        6:"Sommer",7:"Sommer",8:"Sommer",
+        9:"Herbst",10:"Herbst",11:"Herbst"})
+    df["ist_wochenende"]    = (df["wochentag"] >= 5).astype(int)
+    df["ist_rush_hour"]     = df["stunde"].isin([7,8,9,17,18,19]).astype(int)
+
+    if "temperature_2m" in df.columns:
+        df["temp_kategorie"] = pd.cut(
+            df["temperature_2m"], bins=[-30,0,10,20,30,50],
+            labels=["Frost","Kalt","Mild","Warm","Heiss"])
+    if "precipitation" in df.columns:
+        df["regen"] = (df["precipitation"] > 0.1).astype(int)
+    if "wind_speed_10m" in df.columns:
+        df["wind_kategorie"] = pd.cut(
+            df["wind_speed_10m"], bins=[0,5,20,40,300],
+            labels=["Windstill","Leicht","Mässig","Stark"])
+    if "surface_pressure" in df.columns and "temperature_2m" in df.columns:
+        df["inversion_indikator"] = (
+            (df["surface_pressure"] > df["surface_pressure"].quantile(0.75)) &
+            (df["temperature_2m"]  < df["temperature_2m"].quantile(0.25))
+        ).astype(int)
+    if "sunshine_duration" in df.columns:
+        df["sonnenschein_h"] = df["sunshine_duration"] / 3600
+
+    # Skalierung
+    skip = {"timestamp","stunde","wochentag","monat",
+            "ist_wochenende","ist_rush_hour","regen","inversion_indikator"}
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if c not in skip and "_missing" not in c]
+    filled = df[num_cols].fillna(0)
+    std_vals = StandardScaler().fit_transform(filled)
+    mm_vals  = MinMaxScaler().fit_transform(filled)
+    for i, col in enumerate(num_cols):
+        df[f"{col}_std"]  = std_vals[:, i]
+        df[f"{col}_norm"] = mm_vals[:, i]
+
+    df.to_csv("data/processed/datensatz_final.csv", index=False)
+    log(f"Finaler Datensatz: {df.shape[0]:,} × {df.shape[1]} Spalten", "OK")
+    log("Gespeichert: data/processed/datensatz_final.csv", "OK")
+
+    phase_ende(4, t, zeilen=len(df))
+    return df
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 5: QUALITÄTSPRÜFUNG
+# ═════════════════════════════════════════════════════════════
+def phase5_qualitaet(df):
+    t = phase_start(5, "Qualitätsprüfung")
+    Path("output/qualitaet").mkdir(parents=True, exist_ok=True)
+
+    qb = {"erstellt": datetime.now().isoformat(), "checks": {}}
+
+    # Zeitvollständigkeit
+    exp = pd.date_range(df["timestamp"].min(), df["timestamp"].max(),
+                        freq="h", tz=df["timestamp"].dt.tz)
+    ts_pct = len(df) / len(exp) * 100
+    qb["checks"]["zeitvollstaendigkeit_pct"] = round(ts_pct, 2)
+    status = "OK" if ts_pct >= CONFIG["min_zeitvollstaendigkeit"] else "WARN"
+    log(f"Zeitvollständigkeit: {ts_pct:.1f}%", status)
+
+    # Fehlende Werte
+    basis = [c for c in df.columns
+             if "_std" not in c and "_norm" not in c
+             and "_missing" not in c and c != "timestamp"]
+    nan_checks = {}
+    for col in basis:
+        pct = df[col].isnull().mean() * 100
+        nan_checks[col] = round(pct, 2)
+        if pct > CONFIG["max_missing_pct"]:
+            log(f"Hohe Fehlrate: {col} = {pct:.1f}%", "WARN")
+    qb["checks"]["fehlende_werte_pct"] = nan_checks
+
+    # Plausibilität
+    alle_ok = True
+    for col, (mn, mx) in CONFIG["wetter_grenzen"].items():
+        if col not in df.columns:
+            continue
+        verletzt = ((df[col] < mn) | (df[col] > mx)).sum()
+        if verletzt:
+            log(f"Plausibilität: {col} hat {verletzt} Werte ausserhalb "
+                f"[{mn}, {mx}]", "WARN")
+            alle_ok = False
+    qb["checks"]["plausibilitaet_ok"] = alle_ok
+    log(f"Plausibilitätsprüfung: {'✓ bestanden' if alle_ok else '⚠ Warnungen'}")
+
+    # Checksum
+    pfad = Path("data/processed/datensatz_final.csv")
+    with open(pfad, "rb") as f:
+        qb["md5"] = hashlib.md5(f.read()).hexdigest()
+    log(f"MD5-Checksum: {qb['md5']}")
+
+    with open("output/qualitaet/qualitaetsbericht.json", "w") as f:
+        json.dump(qb, f, indent=2, ensure_ascii=False)
+    log("Qualitätsbericht gespeichert", "OK")
+
+    phase_ende(5, t)
+    return qb
+
+
+# ═════════════════════════════════════════════════════════════
+# PHASE 6: VISUALISIERUNG
+# ═════════════════════════════════════════════════════════════
+def phase6_visualisierung(df):
+    t = phase_start(6, "Visualisierung")
+    Path("output/plots").mkdir(parents=True, exist_ok=True)
+
+    schadstoff_cols = [c for c in df.columns
+                       if any(x in c.upper()
+                              for x in ["NO2","NO","O3","PM10","PM2"])
+                       and not any(s in c for s in
+                                   ["_missing","_std","_norm","kategorie"])]
+    wetter_plot = [c for c in ["temperature_2m","precipitation",
+                               "wind_speed_10m","relative_humidity_2m",
+                               "surface_pressure","sonnenschein_h"]
+                   if c in df.columns]
+    haupt = schadstoff_cols[0] if schadstoff_cols else None
+
+    if not haupt:
+        log("Keine Schadstoff-Spalten gefunden – Visualisierung übersprungen",
+            "WARN")
+        phase_ende(6, t)
+        return
+
+    # Plot 1: Jahresübersicht
+    daily = df.set_index("timestamp").resample("D").agg({
+        haupt: "median", "temperature_2m": "mean",
+        "precipitation": "sum", "wind_speed_10m": "mean",
+    })
+    fig = plt.figure(figsize=(16, 9))
+    gs  = gridspec.GridSpec(3, 2, figure=fig, hspace=0.45, wspace=0.35)
+    specs = [
+        (gs[0, :], haupt,           FARBEN["gruen"], "µg/m³"),
+        (gs[1, 0], "temperature_2m",FARBEN["rot"],   "°C"),
+        (gs[1, 1], "precipitation", FARBEN["blau"],  "mm"),
+        (gs[2, 0], "wind_speed_10m",FARBEN["lila"],  "km/h"),
+    ]
+    for spec, col, farbe, einheit in specs:
+        if col not in daily.columns:
+            continue
+        ax = fig.add_subplot(spec)
+        ax.plot(daily.index, daily[col], lw=0.9, color=farbe)
+        ax.fill_between(daily.index, daily[col], alpha=0.12, color=farbe)
+        ax.set_title(col); ax.set_ylabel(einheit, fontsize=8)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
+        ax.grid(True, alpha=0.25)
+    fig.suptitle("Einfluss Wetter auf Luftqualität Zürich 2023", fontsize=13)
+    plt.savefig("output/plots/viz_01_jahresuebersicht.png",
+                bbox_inches="tight"); plt.close()
+    log("viz_01_jahresuebersicht.png", "OK")
+
+    # Plot 2: Korrelationsmatrix
+    alle = schadstoff_cols + wetter_plot
+    alle = [c for c in alle if c in df.columns]
+    if len(alle) >= 2:
+        corr = df[alle].corr()
+        fig, ax = plt.subplots(figsize=(11, 8))
+        im = ax.imshow(corr.values, cmap="RdBu_r", vmin=-1, vmax=1)
+        plt.colorbar(im, ax=ax, shrink=0.8, label="Pearson r")
+        ax.set_xticks(range(len(corr.columns)))
+        ax.set_yticks(range(len(corr.index)))
+        ax.set_xticklabels(corr.columns, rotation=40, ha="right", fontsize=8)
+        ax.set_yticklabels(corr.index, fontsize=8)
+        for i in range(len(corr)):
+            for j in range(len(corr.columns)):
+                v = corr.iloc[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=7, color="white" if abs(v) > 0.55 else "black",
+                        fontweight="bold")
+        ax.set_title("Korrelationsmatrix: Schadstoffe & Wetter 2023", pad=14)
+        plt.tight_layout()
+        plt.savefig("output/plots/viz_02_korrelation.png",
+                    bbox_inches="tight"); plt.close()
+        log("viz_02_korrelation.png", "OK")
+
+    # Plot 3: Saisonale Boxplots
+    if "jahreszeit" in df.columns:
+        reihe = [j for j in ["Winter","Frühling","Sommer","Herbst"]
+                 if j in df["jahreszeit"].unique()]
+        fig, ax = plt.subplots(figsize=(9, 5))
+        data_jz = [df[df["jahreszeit"]==jz][haupt].dropna().values
+                   for jz in reihe]
+        bp = ax.boxplot(data_jz, patch_artist=True,
+                        medianprops=dict(color="white", linewidth=2),
+                        flierprops=dict(marker=".", markersize=2, alpha=0.3))
+        for patch, jz in zip(bp["boxes"], reihe):
+            patch.set_facecolor(JAHRESZEIT_FARBEN.get(jz, FARBEN["grau"]))
+            patch.set_alpha(0.8)
+        ax.set_xticklabels(reihe)
+        ax.set_title(f"{haupt} nach Jahreszeit – Zürich 2023")
+        ax.set_ylabel("µg/m³"); ax.grid(True, alpha=0.25, axis="y")
+        plt.tight_layout()
+        plt.savefig("output/plots/viz_03_jahreszeit.png",
+                    bbox_inches="tight"); plt.close()
+        log("viz_03_jahreszeit.png", "OK")
+
+    # Plot 4: Regen-Effekt
+    if "regen" in df.columns:
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+        kein = df[df["regen"]==0][haupt].dropna()
+        mit  = df[df["regen"]==1][haupt].dropna()
+        bp = axes[0].boxplot([kein, mit], patch_artist=True,
+                             medianprops=dict(color="white", linewidth=2),
+                             flierprops=dict(marker=".", markersize=2, alpha=0.3))
+        bp["boxes"][0].set_facecolor(FARBEN["gelb"]); bp["boxes"][0].set_alpha(0.8)
+        bp["boxes"][1].set_facecolor(FARBEN["blau"]); bp["boxes"][1].set_alpha(0.8)
+        axes[0].set_xticklabels(["Kein Regen", "Regen"])
+        axes[0].set_title(f"{haupt}: Regen vs. kein Regen")
+        axes[0].set_ylabel("µg/m³"); axes[0].grid(True, alpha=0.25, axis="y")
+        diff = kein.mean() - mit.mean()
+        axes[0].text(0.5, 0.93, f"Δ = {diff:.1f} µg/m³",
+                     transform=axes[0].transAxes, ha="center", fontsize=9)
+        sample = df[["precipitation", haupt]].dropna()
+        sample = sample[sample["precipitation"] > 0]
+        r = sample[["precipitation", haupt]].corr().iloc[0,1]
+        axes[1].scatter(sample["precipitation"], sample[haupt],
+                        alpha=0.2, s=6, color=FARBEN["blau"])
+        axes[1].set_xlabel("Niederschlag (mm/h)")
+        axes[1].set_ylabel(f"{haupt} (µg/m³)")
+        axes[1].set_title(f"Niederschlag vs. {haupt} (r={r:.3f})")
+        axes[1].grid(True, alpha=0.25)
+        fig.suptitle("Auswascheffekt von Niederschlag", fontsize=12)
+        plt.tight_layout()
+        plt.savefig("output/plots/viz_04_regen.png",
+                    bbox_inches="tight"); plt.close()
+        log("viz_04_regen.png", "OK")
+
+    # Plot 5: Inversionslagen
+    if "inversion_indikator" in df.columns:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        norm = df[df["inversion_indikator"]==0][haupt].dropna()
+        inv  = df[df["inversion_indikator"]==1][haupt].dropna()
+        axes[0].hist(norm, bins=50, alpha=0.65, color=FARBEN["gruen"],
+                     label=f"Normal (Ø{norm.mean():.1f})", density=True)
+        axes[0].hist(inv,  bins=50, alpha=0.65, color=FARBEN["rot"],
+                     label=f"Inversion (Ø{inv.mean():.1f})", density=True)
+        axes[0].axvline(norm.mean(), color=FARBEN["gruen"], lw=2, linestyle="--")
+        axes[0].axvline(inv.mean(),  color=FARBEN["rot"],   lw=2, linestyle="--")
+        axes[0].set_title(f"{haupt}: Normal vs. Inversionslage")
+        axes[0].set_xlabel("µg/m³"); axes[0].set_ylabel("Dichte")
+        axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.25)
+        inv_mon = df.groupby("monat")["inversion_indikator"].mean() * 100
+        axes[1].bar(range(1, 13), inv_mon.values,
+                    color=FARBEN["blau"], alpha=0.75, edgecolor="white")
+        axes[1].set_xticks(range(1,13))
+        axes[1].set_xticklabels(["J","F","M","A","M","J",
+                                  "J","A","S","O","N","D"])
+        axes[1].set_ylabel("Anteil Inversionsstunden (%)")
+        axes[1].set_title("Monatliche Häufigkeit Inversionslagen")
+        axes[1].grid(True, alpha=0.25, axis="y")
+        diff_inv = inv.mean() - norm.mean()
+        fig.suptitle(f"Inversionslagen erhöhen {haupt} "
+                     f"um Ø +{diff_inv:.1f} µg/m³", fontsize=12)
+        plt.tight_layout()
+        plt.savefig("output/plots/viz_05_inversion.png",
+                    bbox_inches="tight"); plt.close()
+        log("viz_05_inversion.png", "OK")
+
+    # Plot 6: Tagesprofil
+    if "stunde" in df.columns and "jahreszeit" in df.columns:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        for jz, g in df.groupby("jahreszeit"):
+            p = g.groupby("stunde")[haupt].median()
+            axes[0].plot(p.index, p.values, lw=1.8,
+                         color=JAHRESZEIT_FARBEN.get(jz, FARBEN["grau"]),
+                         label=jz, marker="o", markersize=3)
+        axes[0].set_xlabel("Stunde"); axes[0].set_ylabel("µg/m³")
+        axes[0].set_title(f"Tagesprofil {haupt} nach Jahreszeit")
+        axes[0].set_xticks(range(0,24,2)); axes[0].legend(fontsize=8)
+        axes[0].grid(True, alpha=0.25)
+        p_tag = df.groupby("wochentag")[haupt].median()
+        farben_t = [FARBEN["gruen"]]*5 + [FARBEN["rot"]]*2
+        axes[1].bar(range(len(p_tag)), p_tag.values,
+                    color=farben_t[:len(p_tag)], alpha=0.8, edgecolor="white")
+        axes[1].set_xticks(range(len(p_tag)))
+        axes[1].set_xticklabels(["Mo","Di","Mi","Do","Fr","Sa","So"]
+                                 [:len(p_tag)])
+        axes[1].set_ylabel("µg/m³")
+        axes[1].set_title(f"Wochenprofil {haupt}")
+        axes[1].grid(True, alpha=0.25, axis="y")
+        fig.suptitle(f"Zeitliche Muster – {haupt} Zürich 2023", fontsize=12)
+        plt.tight_layout()
+        plt.savefig("output/plots/viz_06_zeitprofile.png",
+                    bbox_inches="tight"); plt.close()
+        log("viz_06_zeitprofile.png", "OK")
+
+    phase_ende(6, t)
+
+
+# ═════════════════════════════════════════════════════════════
+# PROTOKOLL SPEICHERN
+# ═════════════════════════════════════════════════════════════
+def speichere_protokoll():
+    protokoll["abgeschlossen"] = datetime.now().isoformat()
+    protokoll["fehler_total"]  = len(protokoll["fehler"])
+    protokoll["warn_total"]    = len(protokoll["warnungen"])
+    pfad = "output/pipeline_protokoll.json"
+    with open(pfad, "w", encoding="utf-8") as f:
+        json.dump(protokoll, f, indent=2, ensure_ascii=False,
+                  default=str)
+    return pfad
+
+
+# ═════════════════════════════════════════════════════════════
+# HAUPTPROGRAMM
+# ═════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="DWAE Pipeline – Luftqualität Zürich")
+    parser.add_argument("--ab-phase",  type=int, default=1,
+                        help="Ab Phase N starten (1-6)")
+    parser.add_argument("--nur-phase", type=int, default=None,
+                        help="Nur Phase N ausführen")
+    args = parser.parse_args()
+
+    start_gesamt = time.time()
+    print("\n" + "=" * 60)
+    print("DWAE PROJEKT – AUTOMATISIERTE PIPELINE")
+    print("Thema: Einfluss von Wetter auf Luftqualität in Zürich")
+    print(f"Gestartet: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+    print("=" * 60)
+
+    # Bestimme welche Phasen laufen
+    if args.nur_phase:
+        phasen = [args.nur_phase]
+    else:
+        phasen = list(range(args.ab_phase, 7))
+
+    print(f"\n  Ausführen: Phasen {phasen}")
+
+    try:
+        df_luft = df_wetter = df_clean_l = df_clean_w = df_final = None
+
+        # Zwischen-Daten laden wenn ab Phase > 1
+        if args.ab_phase > 1 and 1 not in phasen:
+            log("Lade vorhandene Rohdaten...")
+            try:
+                df_luft   = pd.read_csv("data/raw/luftqualitaet_2023_roh.csv")
+                df_wetter = pd.read_csv("data/raw/wetter_2023_roh.csv")
+                log("Rohdaten geladen", "OK")
+            except FileNotFoundError:
+                log("Rohdaten fehlen – starte ab Phase 1", "WARN")
+                phasen = list(range(1, 7))
+
+        if args.ab_phase > 3 and 3 not in phasen:
+            try:
+                df_clean_l = pd.read_csv(
+                    "data/processed/luftqualitaet_2023_clean.csv")
+                df_clean_w = pd.read_csv(
+                    "data/processed/wetter_2023_clean.csv")
+                log("Bereinigte Daten geladen", "OK")
+            except FileNotFoundError:
+                log("Bereinigte Daten fehlen – starte ab Phase 3", "WARN")
+                phasen = list(range(min(3, args.ab_phase), 7))
+
+        if args.ab_phase > 4 and 4 not in phasen:
+            try:
+                df_final = pd.read_csv("data/processed/datensatz_final.csv")
+                df_final["timestamp"] = pd.to_datetime(df_final["timestamp"])
+                log("Finaler Datensatz geladen", "OK")
+            except FileNotFoundError:
+                log("Finaler Datensatz fehlt – starte ab Phase 4", "WARN")
+                phasen = list(range(min(4, args.ab_phase), 7))
+
+        # Pipeline ausführen
+        if 1 in phasen:
+            df_luft, df_wetter = phase1_datenbeschaffung()
+        if 2 in phasen and df_luft is not None:
+            phase2_eda(df_luft, df_wetter)
+        if 3 in phasen and df_luft is not None:
+            df_clean_l, df_clean_w = phase3_bereinigung(df_luft, df_wetter)
+        if 4 in phasen and df_clean_l is not None:
+            df_final = phase4_transformation(df_clean_l, df_clean_w)
+        if 5 in phasen and df_final is not None:
+            phase5_qualitaet(df_final)
+        if 6 in phasen and df_final is not None:
+            phase6_visualisierung(df_final)
+
+    except Exception as e:
+        log(f"KRITISCHER FEHLER: {e}", "ERR")
+        traceback.print_exc()
+        sys.exit(1)
+
+    finally:
+        pfad = speichere_protokoll()
+        dauer = time.time() - start_gesamt
+        print(f"\n{'='*60}")
+        print(f"PIPELINE ABGESCHLOSSEN in {dauer:.1f}s")
+        print(f"  Fehler:   {len(protokoll['fehler'])}")
+        print(f"  Warnungen:{len(protokoll['warnungen'])}")
+        print(f"  Protokoll: {pfad}")
+        print(f"\n  Output-Dateien:")
+        for f in sorted(Path("output").rglob("*.*")):
+            print(f"    {f}")
+        print("=" * 60)
