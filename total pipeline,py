@@ -274,10 +274,12 @@ def phase4_transformation(dl, dw):
     dw["Datum"]     = pd.to_datetime(dw["Datum"]).dt.floor("h")
 
     def setze_tz(s):
+        if s.dt.tz is not None:
+            return s.dt.tz_convert(CONFIG["timezone"])
         return (s.dt.tz_localize(CONFIG["timezone"],
-                                 ambiguous="infer",
+                                 ambiguous="NaT",        # doppelte Stunde → NaT
                                  nonexistent="shift_forward")
-                if s.dt.tz is None else s.dt.tz_convert(CONFIG["timezone"]))
+                .fillna(method="ffill"))                 # NaT auffüllen
 
     dl["timestamp"] = setze_tz(dl["timestamp"])
     dw["Datum"]     = setze_tz(dw["Datum"])

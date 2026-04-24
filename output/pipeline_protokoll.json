@@ -1,0 +1,95 @@
+{
+  "gestartet": "2026-04-24T11:06:46.392426",
+  "config": {
+    "start_date": "2023-01-01",
+    "end_date": "2023-12-31",
+    "latitude": 47.3769,
+    "longitude": 8.5417,
+    "timezone": "Europe/Zurich",
+    "luft_url": "https://data.stadt-zuerich.ch/dataset/ugz_luftschadstoffmessung_stundenwerte/download/ugz_ogd_air_h1_2023.csv",
+    "luft_lokal": "data/raw/ugz_ogd_air_h1_2023.csv",
+    "min_merge_quote": 80.0,
+    "min_zeitvollstaendigkeit": 95.0,
+    "max_missing_pct": 20.0,
+    "max_interpolation_luecke": 3,
+    "wetter_grenzen": {
+      "temperature_2m": [
+        -30,
+        45
+      ],
+      "relative_humidity_2m": [
+        0,
+        100
+      ],
+      "precipitation": [
+        0,
+        150
+      ],
+      "wind_speed_10m": [
+        0,
+        200
+      ],
+      "surface_pressure": [
+        920,
+        1060
+      ],
+      "cloud_cover": [
+        0,
+        100
+      ],
+      "sunshine_duration": [
+        0,
+        3600
+      ]
+    }
+  },
+  "phasen": {
+    "1": {
+      "name": "Datenbeschaffung",
+      "start": "2026-04-24T11:06:46.394175",
+      "dauer_s": 6.06,
+      "status": "OK",
+      "zeilen": 210240
+    },
+    "2": {
+      "name": "Explorative Datenanalyse (EDA)",
+      "start": "2026-04-24T11:06:52.463274",
+      "dauer_s": 0.13,
+      "status": "OK"
+    },
+    "3": {
+      "name": "Datenbereinigung",
+      "start": "2026-04-24T11:06:52.593044",
+      "dauer_s": 0.37,
+      "status": "OK",
+      "zeilen": 8760
+    },
+    "4": {
+      "name": "Datentransformation & Merge",
+      "start": "2026-04-24T11:06:52.963141",
+      "dauer_s": 0.5,
+      "status": "OK",
+      "zeilen": 8760
+    },
+    "5": {
+      "name": "Qualitätsprüfung",
+      "start": "2026-04-24T11:06:53.464385",
+      "dauer_s": 0.04,
+      "status": "OK"
+    },
+    "6": {
+      "name": "Visualisierung",
+      "start": "2026-04-24T11:06:53.504281",
+      "dauer_s": 0.0,
+      "status": "OK"
+    }
+  },
+  "fehler": [],
+  "warnungen": [
+    "Duplikate entfernt: 201480",
+    "Keine Schadstoff-Spalten gefunden – Visualisierung übersprungen"
+  ],
+  "abgeschlossen": "2026-04-24T11:06:53.505051",
+  "fehler_total": 0,
+  "warn_total": 2
+}
