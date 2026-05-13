@@ -52,7 +52,7 @@ df_wetter["Datum"]   = df_wetter["Datum"].dt.floor("h")
 # Falls Zeitzone bereits gesetzt: konvertieren, sonst: lokalisieren
 def setze_zeitzone(series, tz="Europe/Zurich"):
     if series.dt.tz is None:
-        return series.dt.tz_localize(tz, ambiguous="infer",
+        return series.dt.tz_localize(tz, ambiguous="NaT",
                                      nonexistent="shift_forward")
     else:
         return series.dt.tz_convert(tz)

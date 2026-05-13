@@ -53,6 +53,8 @@ CONFIG = {
     "min_zeitvollstaendigkeit": 95.0, # % Zeitindex vollständig
     "max_missing_pct":        20.0,   # % fehlende Werte pro Spalte
     "max_interpolation_luecke": 3,    # Stunden
+    "MAX_LUECKE_STUNDEN":     3,      # max. interpolierbare Lücke
+    "REGEN_SCHWELLENWERT":    0.1,    # mm – ab hier gilt es als Regen
 
     # Physikalische Grenzen Wetter
     "wetter_grenzen": {
@@ -246,7 +248,7 @@ def phase3_bereinigung(df_luft, df_wetter):
     log("Indikatorvariablen (_missing) erstellt")
 
     # Kurze Lücken interpolieren
-    lim = CONFIG["max_interpolation_luecke"]
+    lim = CONFIG["MAX_LUECKE_STUNDEN"]
     vor = dl[luft_num].isnull().sum().sum()
     for col in luft_num:
         dl[col] = dl[col].interpolate(method="linear", limit=lim,
@@ -279,7 +281,7 @@ def phase4_transformation(dl, dw):
         return (s.dt.tz_localize(CONFIG["timezone"],
                                  ambiguous="NaT",        # doppelte Stunde → NaT
                                  nonexistent="shift_forward")
-                .fillna(method="ffill"))                 # NaT auffüllen
+                .ffill())                               # NaT auffüllen
 
     dl["timestamp"] = setze_tz(dl["timestamp"])
     dw["Datum"]     = setze_tz(dw["Datum"])
@@ -309,7 +311,7 @@ def phase4_transformation(dl, dw):
             df["temperature_2m"], bins=[-30,0,10,20,30,50],
             labels=["Frost","Kalt","Mild","Warm","Heiss"])
     if "precipitation" in df.columns:
-        df["regen"] = (df["precipitation"] > 0.1).astype(int)
+        df["regen"] = (df["precipitation"] > CONFIG["REGEN_SCHWELLENWERT"]).astype(int)
     if "wind_speed_10m" in df.columns:
         df["wind_kategorie"] = pd.cut(
             df["wind_speed_10m"], bins=[0,5,20,40,300],
