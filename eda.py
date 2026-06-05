@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pathlib import Path
+import plot_config                # setzt rcParams global
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
 Path("output/plots").mkdir(parents=True, exist_ok=True)

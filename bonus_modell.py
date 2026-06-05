@@ -21,14 +21,8 @@ from sklearn.pipeline import Pipeline
 Path("output/plots").mkdir(parents=True, exist_ok=True)
 Path("output/modell").mkdir(parents=True, exist_ok=True)
 
-plt.rcParams.update({
-    "font.family": "sans-serif", "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.spines.top": False, "axes.spines.right": False,
-})
-
-FARBEN = {"blau": "#185FA5", "gruen": "#1D9E75",
-          "rot": "#D85A30", "lila": "#534AB7", "grau": "#6B7280"}
+import plot_config                                    # setzt rcParams global
+from plot_config import FARBEN, who_linie, suptitel_stats, FIG_GROSS
 
 print("=" * 60)
 print("BONUS – ML-Modell: Vorhersage Luftschadstoff aus Wetter")

@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import plot_config                # setzt rcParams global
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
 Path("output/plots").mkdir(parents=True, exist_ok=True)
@@ -137,7 +138,236 @@ for col in wetter_num_cols:
 
 print("  Indikatorvariablen (_missing) erstellt.")
 
-# ── 4b. Kurze Lücken interpolieren (≤ 3 Stunden) ──
+# ── 4b. MCAR/MAR/MNAR-Analyse ──
+# Vor der Imputation prüfen wir, welchem Typ die fehlenden Werte angehören:
+#   MCAR – fehlen vollständig zufällig (kein Muster erkennbar)
+#   MAR  – Fehlen korreliert mit anderen beobachteten Variablen
+#   MNAR – Fehlen hängt vom Wert selbst ab (z.B. Sensor über Messbereich)
+print("\n  MCAR/MAR/MNAR-Analyse...")
+
+def analysiere_mcar_mar(df, num_cols, tcol, label):
+    analyse_cols = [
+        c for c in num_cols
+        if f"{c}_missing" in df.columns
+        and df[f"{c}_missing"].sum() > 0
+    ]
+    if not analyse_cols:
+        print(f"  {label}: keine fehlenden Werte – Analyse entfällt")
+        return
+
+    print(f"\n  --- {label} ---")
+    print(f"  {'Spalte':<30} {'n':>6} {'%':>5}  "
+          f"{'CV mon.':>7}  {'Max-Run':>8}  Typ")
+    print(f"  {'-'*78}")
+
+    df_t = df.copy()
+    df_t[tcol] = pd.to_datetime(df_t[tcol])
+
+    for col in analyse_cols:
+        miss_col = f"{col}_missing"
+        n   = int(df[miss_col].sum())
+        pct = n / len(df) * 100
+
+        # Test 1: Monatlicher Variationskoeffizient
+        # Hoher CV → saisonale Häufung → MAR-Hinweis
+        monthly = (df_t.set_index(tcol)[miss_col]
+                   .resample("ME").mean() * 100)
+        cv = float(monthly.std() / monthly.mean()) if monthly.mean() > 0 else 0.0
+
+        # Test 2: Längste zusammenhängende Fehlstrecke (Run-Length)
+        # Kurze Runs (<= 3h): zufällige Aussetzer → MCAR
+        # Lange Runs (> 24h): Geräteausfall/Wartung → MCAR
+        # Mittlere Runs:      Kalibrierung/Saisonal → MAR
+        run_ids  = (df[miss_col] != df[miss_col].shift(1)).cumsum()
+        max_run  = int(
+            df.groupby(run_ids)[miss_col]
+              .apply(lambda x: len(x) if x.iloc[0] == 1 else 0)
+              .max()
+        )
+
+        # Heuristische Klassifikation
+        if cv < 0.4 and max_run <= 6:
+            typ = "MCAR  (zufällige Aussetzer)"
+        elif cv >= 0.6:
+            typ = "MAR   (saisonal/strukturiert)"
+        elif max_run > 24:
+            typ = "MCAR  (längerer Geräteausfall)"
+        else:
+            typ = "MAR/MCAR (Blockausfälle)"
+
+        print(f"  {col:<30} {n:>6,} {pct:>5.1f}%  "
+              f"CV={cv:.2f}  run={max_run:>4}h  → {typ}")
+
+    print("""
+  Interpretationshilfe für den Bericht:
+    CV (monatlicher Variationskoeffizient der Fehlrate):
+      < 0.4 → gleichmässig übers Jahr verteilt → MCAR
+      ≥ 0.6 → saisonale Schwankungen           → MAR
+
+    Maximale zusammenhängende Fehlstrecke (Run):
+      ≤  3h  Kurze Aussetzer: Messrauschen / Sensorwackler   → MCAR
+      > 24h  Lange Blöcke:    Geplante Wartung / Ausfall      → MCAR
+       4–24h  Mittlere Blöcke: Kalibrierung / saisonaler Effekt → MAR
+
+    Folgerung für die Imputation:
+      MCAR → Lineare Interpolation (≤ 3h) liefert unverzerrte Schätzungen
+      MAR  → Interpolation möglich; _missing-Indikator im Modell behalten,
+             da das Fehlen selbst Information trägt
+      MNAR → Kritisch: Extremwerte könnten systematisch fehlen (Sensorlimit).
+             Ergebnisse mit Vorsicht interpretieren.
+""")
+
+analysiere_mcar_mar(df_luft_clean,  luft_num_cols,   "timestamp", "Luftqualität")
+analysiere_mcar_mar(df_wetter_clean, wetter_num_cols, "Datum",     "Wetter")
+
+# ── Heatmap: Monatliche Fehlraten (MCAR/MAR-Visualisierung) ──
+print("\n  Erstelle MCAR/MAR-Heatmap...")
+
+def plot_mcar_heatmap(datasets, save_path):
+    """
+    Manuelle Heatmap der monatlichen Fehlraten ohne missingno.
+    datasets : list of (df, num_cols, tcol, prefix)
+    Farben   : grün = vollständig · gelb = 50 % fehlt · rot = alles fehlt
+    Unten    : automatische Textinterpretation (MAR / MCAR / Mischform)
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+
+    MONATE = ["Jan","Feb","Mär","Apr","Mai","Jun",
+              "Jul","Aug","Sep","Okt","Nov","Dez"]
+
+    # ── Monatliche Fehlrate pro Spalte berechnen ──
+    zeilen = []  # [(label, [rate_Jan, ..., rate_Dez]), ...]
+    for df_c, num_c, tcol, prefix in datasets:
+        df_t = df_c.copy()
+        df_t[tcol] = pd.to_datetime(df_t[tcol])
+        df_t = df_t.set_index(tcol)
+        for col in num_c:
+            if "_missing" in col:
+                continue
+            miss_col = f"{col}_missing"
+            if miss_col not in df_c.columns or df_c[miss_col].sum() == 0:
+                continue
+            monthly = df_t[miss_col].resample("ME").mean()
+            monthly.index = monthly.index.month
+            row = [float(monthly.get(m, 0.0)) for m in range(1, 13)]
+            zeilen.append((f"{prefix}: {col}", row))
+
+    if not zeilen:
+        print("  Keine fehlenden Werte – Heatmap entfällt")
+        return
+
+    labels = [z[0] for z in zeilen]
+    data   = np.array([z[1] for z in zeilen])
+    n_r    = len(labels)
+
+    # ── Farbpalette: grün → gelb → rot ──
+    cmap = LinearSegmentedColormap.from_list(
+        "mcar", ["#1D9E75", "#F4D03F", "#C0392B"]
+    )
+
+    fig, (ax_heat, ax_text) = plt.subplots(
+        2, 1,
+        figsize=(14, max(4, n_r * 0.6) + 5),
+        gridspec_kw={"height_ratios": [max(n_r, 3), 5]},
+    )
+
+    # ── Heatmap ──
+    im = ax_heat.imshow(data, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+    plt.colorbar(im, ax=ax_heat, fraction=0.015, pad=0.01,
+                 label="Anteil fehlend  (grün = vollständig · rot = alles fehlt)")
+    ax_heat.set_xticks(range(12))
+    ax_heat.set_xticklabels(MONATE)
+    ax_heat.set_yticks(range(n_r))
+    ax_heat.set_yticklabels(labels)
+    ax_heat.set_title(
+        "Monatliche Fehlraten – MCAR/MAR-Analyse\n"
+        "Grün = vollständig vorhanden · Rot = vollständig fehlend",
+        pad=10
+    )
+    ax_heat.set_xlabel("Monat")
+
+    # Prozentwerte in die Zellen schreiben
+    for i in range(n_r):
+        for j in range(12):
+            v = data[i, j]
+            if v > 0.005:
+                ax_heat.text(j, i, f"{v:.0%}",
+                             ha="center", va="center", fontsize=8.5,
+                             color="white" if v > 0.55 else "black")
+
+    # ── Interpretation berechnen ──
+    mar_cols  = []
+    mcar_cols = []
+    txt_zeilen = [
+        "Interpretation der MCAR/MAR-Analyse:",
+        f"  {'Spalte':<32} {'Typ':<32} Begründung",
+        "  " + "─" * 82,
+    ]
+
+    for label, row in zeilen:
+        arr        = np.array(row)
+        cv         = float(arr.std() / arr.mean()) if arr.mean() > 0 else 0.0
+        aktiv      = [MONATE[j] for j in range(12) if arr[j] > 0.05]
+
+        if cv >= 0.5 and len(aktiv) <= 6:
+            typ = "MAR  (saisonal geclustert)"
+            det = f"Häufung in: {', '.join(aktiv)}"
+            mar_cols.append(label)
+        elif cv < 0.35:
+            typ = "MCAR (gleichmässig verteilt)"
+            det = f"CV={cv:.2f} – kein saisonales Muster"
+            mcar_cols.append(label)
+        else:
+            typ = "MCAR/MAR (Mischform)"
+            det = f"CV={cv:.2f} – teilw. in: {', '.join(aktiv)}"
+
+        txt_zeilen.append(f"  {label:<32} {typ:<32} {det}")
+
+    txt_zeilen += ["", "  Fazit:"]
+    if mar_cols:
+        txt_zeilen.append(
+            f"  → MAR-Verdacht bei: {', '.join(mar_cols)}")
+        txt_zeilen.append(
+            "    Saisonale Clusterung → wahrscheinlich Wartungsrhythmen des Messnetzes")
+        txt_zeilen.append(
+            "    oder saisonaler Messbetrieb. _missing-Indikator im Modell behalten,")
+        txt_zeilen.append(
+            "    da das Fehlen selbst eine Information ist.")
+    if mcar_cols:
+        txt_zeilen.append(
+            f"  → MCAR-Verdacht bei: {', '.join(mcar_cols)}")
+        txt_zeilen.append(
+            "    Gleichmässige Verteilung → zufällige Sensorausfälle.")
+        txt_zeilen.append(
+            "    Lineare Interpolation (≤ 3h) liefert hier unverzerrte Schätzungen.")
+    if not mar_cols and not mcar_cols:
+        txt_zeilen.append(
+            "  → Gemischtes Muster bei allen Spalten (MCAR/MAR).")
+        txt_zeilen.append(
+            "    _missing-Indikatoren werden im finalen Datensatz behalten.")
+
+    ax_text.axis("off")
+    ax_text.text(0.01, 0.98, "\n".join(txt_zeilen),
+                 transform=ax_text.transAxes,
+                 va="top", ha="left",
+                 fontsize=8.5, fontfamily="monospace",
+                 linespacing=1.5)
+
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close()
+    print(f"  Plot gespeichert: {save_path}")
+
+
+plot_mcar_heatmap(
+    [
+        (df_luft_clean,   luft_num_cols,   "timestamp", "Luft"),
+        (df_wetter_clean, wetter_num_cols, "Datum",     "Wett."),
+    ],
+    "output/plots/bereinigung_mcar_analyse.png",
+)
+
+# ── 4c. Kurze Lücken interpolieren (≤ 3 Stunden) ──
 # Zeitreihen-Interpolation ist besser als Mittelwert-Imputation,
 # da sie den zeitlichen Verlauf berücksichtigt.
 print("\n  Interpolation kurzer Lücken (≤ 3h)...")
@@ -162,7 +392,7 @@ interpoliere_kurze_luecken(
 interpoliere_kurze_luecken(
     df_wetter_clean, wetter_num_cols, max_luecke=3, label="Wetter")
 
-# ── 4c. Verbleibende NaNs dokumentieren ──
+# ── 4d. Verbleibende NaNs dokumentieren ──
 print("\n  Verbleibende fehlende Werte nach Interpolation:")
 for name, df, cols in [("Luftqualität", df_luft_clean,  luft_num_cols),
                         ("Wetter",       df_wetter_clean, wetter_num_cols)]:
@@ -300,9 +530,11 @@ print("""
 
   3. Fehlende Werte
      - Indikatorvariablen (_missing) vor Imputation erstellt
-     - Kurze Lücken ≤ 3h: Lineare Interpolation (zeitlich)
+     - MCAR/MAR/MNAR-Analyse: Typ basierend auf monatlichem CV
+       und maximaler Run-Length bestimmt (siehe Ausgabe oben)
+     - Kurze Lücken ≤ 3h: Lineare Interpolation (zeitlich, unverzerrte
+       Schätzung bei MCAR; MAR-Typ über _missing-Indikator dokumentiert)
      - Längere Lücken: Als NaN belassen
-     - Typ: Wahrscheinlich MCAR (Sensorausfälle, Wartung)
 
   4. Ausreisser
      - Luftschadstoffe: Winsorisierung 1%–99% wo nötig
