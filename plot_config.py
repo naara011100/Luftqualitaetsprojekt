@@ -80,6 +80,22 @@ def einheit(col: str) -> str:
     return ""
 
 
+def finde_schadstoff_cols(df):
+    """
+    Findet Schadstoff-Spalten im DataFrame.
+    Unterstützt pivotierte Daten (NO2, PM10 als Spaltennamen) und das
+    OGD-Langformat der Stadt Zürich (einzelne Spalte 'Wert' + 'Parameter').
+    """
+    kandidaten = ["NO2", "NO", "O3", "PM10", "PM2.5", "PM25"]
+    skip       = ["_missing", "_std", "_norm", "kategorie", "DATUM", "STATION"]
+    return [
+        c for c in df.columns
+        if any(x in c.upper() for x in kandidaten)
+        and not any(s in c for s in skip)
+        and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+
 def who_linie(ax, col: str, vertikal: bool = False, **kwargs):
     """
     Zeichnet WHO-Grenzwert als gestrichelte Linie auf ax.
@@ -114,7 +130,7 @@ def suptitel_stats(df, col: str = None, prefix: str = "") -> str:
     parts.append(f"n = {n:,} Std.")
 
     if "timestamp" in df.columns:
-        ts = pd.to_datetime(df["timestamp"]).dropna()
+        ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None).dropna()
         if len(ts) > 0:
             parts.append(
                 f"{ts.min().strftime('%d.%m.%Y')} – "

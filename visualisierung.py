@@ -6,6 +6,7 @@
 # Ausführen:     python W06_visualisierung.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,12 +14,16 @@ import matplotlib.dates as mdates
 import matplotlib.gridspec as gridspec
 from pathlib import Path
 
+# Windows-Terminal: UTF-8 erzwingen damit ✓ und Umlaute korrekt ausgegeben werden
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 Path("output/plots").mkdir(parents=True, exist_ok=True)
 
 import plot_config                                     # setzt rcParams global
 from plot_config import (FARBEN, JAHRESZEIT_FARBEN,
                          who_linie, suptitel_stats,
-                         FIG_KLEIN, FIG_GROSS)
+                         FIG_KLEIN, FIG_GROSS,
+                         finde_schadstoff_cols)
 
 ERKLAERUNGEN = {
     "regen": (
@@ -50,15 +55,14 @@ print("=" * 60)
 # DATEN LADEN
 # ─────────────────────────────────────────────────────────────
 df = pd.read_csv("data/processed/datensatz_final.csv")
-df["timestamp"] = pd.to_datetime(df["timestamp"])
+df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
 
-schadstoff_cols = [c for c in df.columns
-                   if any(x in c.upper()
-                          for x in ["NO2","NO","O3","PM10","PM2"])
-                   and "_missing" not in c
-                   and "_std" not in c
-                   and "_norm" not in c
-                   and "kategorie" not in c]
+schadstoff_cols = finde_schadstoff_cols(df)
+if not schadstoff_cols:
+    print("FEHLER: Keine Schadstoffspalten gefunden.")
+    print("Vorhandene Spalten:", list(df.columns))
+    print("Bitte Spaltennamen in plot_config.py anpassen.")
+    exit(1)
 
 wetter_cols = [c for c in [
     "temperature_2m", "precipitation", "wind_speed_10m",

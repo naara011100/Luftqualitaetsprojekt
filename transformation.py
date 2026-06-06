@@ -6,12 +6,16 @@
 # Ausführen:     python W04_transformation.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pathlib import Path
 import plot_config                # setzt rcParams global
+from plot_config import finde_schadstoff_cols
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
 Path("output/plots").mkdir(parents=True, exist_ok=True)
@@ -27,11 +31,11 @@ print("=" * 60)
 print("\n[1/6] Bereinigte Daten laden...")
 
 df_luft = pd.read_csv("data/processed/luftqualitaet_2023_clean.csv")
-df_luft["timestamp"] = pd.to_datetime(df_luft["timestamp"])
+df_luft["timestamp"] = pd.to_datetime(df_luft["timestamp"], utc=True).dt.tz_convert(None)
 df_luft = df_luft.sort_values("timestamp").reset_index(drop=True)
 
 df_wetter = pd.read_csv("data/processed/wetter_2023_clean.csv")
-df_wetter["Datum"] = pd.to_datetime(df_wetter["Datum"])
+df_wetter["Datum"] = pd.to_datetime(df_wetter["Datum"], utc=True).dt.tz_convert(None)
 df_wetter = df_wetter.sort_values("Datum").reset_index(drop=True)
 
 print(f"  Luftqualität : {df_luft.shape[0]:,} Zeilen × {df_luft.shape[1]} Spalten")
@@ -232,12 +236,7 @@ print(f"  Skalierte auf Trainingsdaten (gesamter 2023er Datensatz)")
 print("\n[6/6] Korrelationsanalyse & Plots...")
 
 # Schadstoffe und Wettervariablen identifizieren
-schadstoff_cols = [c for c in df_merged.columns
-                   if any(x in c.upper()
-                          for x in ["NO2", "NO", "O3", "PM10", "PM2"])
-                   and "_missing" not in c
-                   and "_std" not in c
-                   and "_norm" not in c]
+schadstoff_cols = finde_schadstoff_cols(df_merged)
 
 wetter_cols_plot = [c for c in [
     "temperature_2m", "precipitation", "wind_speed_10m",

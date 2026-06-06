@@ -6,12 +6,16 @@
 # Ausführen:     python W05_pipeline.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import json
 import hashlib
 from pathlib import Path
 from datetime import datetime
+from plot_config import finde_schadstoff_cols
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 Path("output/qualitaet").mkdir(parents=True, exist_ok=True)
 
@@ -23,7 +27,7 @@ print("=" * 60)
 # DATEN LADEN
 # ─────────────────────────────────────────────────────────────
 df = pd.read_csv("data/processed/datensatz_final.csv")
-df["timestamp"] = pd.to_datetime(df["timestamp"])
+df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
 
 print(f"\n  Datensatz: {df.shape[0]:,} Zeilen × {df.shape[1]} Spalten")
 
@@ -34,10 +38,7 @@ basis_cols = [c for c in df.columns
               and "_missing" not in c
               and c != "timestamp"]
 
-schadstoff_cols = [c for c in basis_cols
-                   if any(x in c.upper()
-                          for x in ["NO2","NO","O3","PM10","PM2"])
-                   and "kategorie" not in c]
+schadstoff_cols = finde_schadstoff_cols(df)
 
 wetter_cols = [c for c in [
     "temperature_2m", "precipitation", "wind_speed_10m",

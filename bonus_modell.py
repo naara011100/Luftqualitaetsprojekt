@@ -7,10 +7,13 @@
 # Ausführen: python W08_bonus_modell.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score
@@ -22,7 +25,7 @@ Path("output/plots").mkdir(parents=True, exist_ok=True)
 Path("output/modell").mkdir(parents=True, exist_ok=True)
 
 import plot_config                                    # setzt rcParams global
-from plot_config import FARBEN, who_linie, suptitel_stats, FIG_GROSS
+from plot_config import FARBEN, who_linie, suptitel_stats, FIG_GROSS, finde_schadstoff_cols
 
 print("=" * 60)
 print("BONUS – ML-Modell: Vorhersage Luftschadstoff aus Wetter")
@@ -35,18 +38,14 @@ print("=" * 60)
 print("\n[1/5] Daten laden...")
 
 df = pd.read_csv("data/processed/datensatz_final.csv")
-df["timestamp"] = pd.to_datetime(df["timestamp"])
+df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
 
 # Zielvariable: erster verfügbarer Schadstoff
-ziel_kandidaten = [c for c in df.columns
-                   if any(x in c.upper()
-                          for x in ["NO2", "NO", "O3", "PM10", "PM2"])
-                   and not any(s in c
-                               for s in ["_missing", "_std", "_norm",
-                                         "kategorie"])]
+ziel_kandidaten = finde_schadstoff_cols(df)
 
 if not ziel_kandidaten:
     print("  FEHLER: Keine Schadstoffspalten gefunden.")
+    print("  Vorhandene Spalten:", list(df.columns))
     exit(1)
 
 ZIELVARIABLE = ziel_kandidaten[0]

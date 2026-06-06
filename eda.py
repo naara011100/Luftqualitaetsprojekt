@@ -6,12 +6,15 @@
 # Ausführen:     python W02_eda.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pathlib import Path
 import plot_config                # setzt rcParams global
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
 Path("output/plots").mkdir(parents=True, exist_ok=True)
@@ -150,7 +153,7 @@ print("\n[6/7] Plots erstellen...")
 
 # --- Plot 1: Zeitreihen Schadstoffe ---
 luft_cols = [c for c in df_luft.columns
-             if any(x in c.upper() for x in ["NO2", "O3", "PM10", "PM2"])]
+             if any(x in c.upper() for x in ["NO2", "NO", "O3", "PM10", "PM2.5", "PM25"])]
 if luft_cols:
     fig, axes = plt.subplots(len(luft_cols), 1,
                              figsize=(14, 3 * len(luft_cols)), sharex=True)

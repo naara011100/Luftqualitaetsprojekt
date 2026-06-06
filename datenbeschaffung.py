@@ -7,11 +7,15 @@
 #   2. Wetterdaten:  Open-Meteo API (kostenlos, kein API-Key)
 # =============================================================
 
+import sys
 import requests
 import pandas as pd
 import json
 from pathlib import Path
-from io import StringIO
+from io import BytesIO, StringIO
+
+# Windows-Terminal: UTF-8 erzwingen
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Ausgabe-Ordner anlegen
 Path("data/raw").mkdir(parents=True, exist_ok=True)
@@ -47,7 +51,8 @@ try:
     headers = {"User-Agent": "Mozilla/5.0 (research project, FHNW)"}
     response = requests.get(LUFT_URL, timeout=30, headers=headers)
     response.raise_for_status()
-    df_luft_raw = pd.read_csv(StringIO(response.text))
+    # BytesIO + utf-8-sig: entfernt BOM (ï»¿) automatisch
+    df_luft_raw = pd.read_csv(BytesIO(response.content), encoding="utf-8-sig", sep=",")
     print(f"      OK: {df_luft_raw.shape[0]:,} Zeilen, "
           f"{df_luft_raw.shape[1]} Spalten")
 
@@ -59,15 +64,17 @@ except requests.exceptions.RequestException as e:
     # Lokale Datei laden falls vorhanden
     local_path = Path("data/raw/ugz_ogd_air_h1_2023.csv")
     if local_path.exists():
-        df_luft_raw = pd.read_csv(local_path)
+        df_luft_raw = pd.read_csv(local_path, encoding="utf-8-sig", sep=",")
         print(f"      Lokale Datei geladen: {df_luft_raw.shape}")
     else:
         df_luft_raw = None
 
+df_luft_wide = None  # wird im folgenden Block gefüllt
+
 if df_luft_raw is not None:
-    # Rohdaten speichern
-    df_luft_raw.to_csv("data/raw/luftqualitaet_2023_roh.csv", index=False)
-    print(f"      Spalten: {list(df_luft_raw.columns)}")
+    # Long-Format-Rohdaten einmalig sichern (vor dem Pivot)
+    df_luft_raw.to_csv("data/raw/luftqualitaet_2023_roh_long.csv", index=False)
+    print(f"      Spalten (Long): {list(df_luft_raw.columns)}")
 
     # Erste Übersicht
     print(f"\n      Fehlende Werte pro Spalte:")
@@ -76,8 +83,48 @@ if df_luft_raw is not None:
         pct = n / len(df_luft_raw) * 100
         print(f"        {col:<35} {n:>6} ({pct:.1f}%)")
 
-    print(f"\n      Erste 3 Zeilen:")
+    print(f"\n      Erste 3 Zeilen (Long):")
     print(df_luft_raw.head(3).to_string())
+
+    # ──────────────────────────────────────────────────────────
+    # Long → Wide Format pivotieren
+    # OGD-Daten liegen im Langformat vor: eine Zeile pro Stunde
+    # und Schadstoff. Ziel: eine Zeile pro Stunde, eine Spalte
+    # pro Schadstoff (z.B. NO, NO2, O3, PM10, PM2.5).
+    # ──────────────────────────────────────────────────────────
+    print("\n  Pivotiere Long → Wide Format...")
+
+    # Zeitstempel parsen, in UTC flooren und Timezone entfernen
+    # (Flooring in Europe/Zurich schlägt an DST-Übergängen fehl)
+    df_luft_raw["Datum"] = (
+        pd.to_datetime(df_luft_raw["Datum"], utc=True)
+        .dt.floor("h")
+        .dt.tz_convert(None)
+    )
+
+    # Nur relevante Schadstoffe behalten
+    schadstoffe = ["NO", "NO2", "O3", "PM10", "PM2.5"]
+    df_luft_filtered = df_luft_raw[
+        df_luft_raw["Parameter"].isin(schadstoffe)
+    ].copy()
+
+    # Duplikate pro Zeitstempel + Parameter entfernen (Mittelwert)
+    df_luft_filtered = df_luft_filtered.groupby(
+        ["Datum", "Parameter"], as_index=False
+    )["Wert"].mean()
+
+    # Pivot: eine Zeile pro Stunde, eine Spalte pro Schadstoff
+    df_luft_wide = df_luft_filtered.pivot(
+        index="Datum", columns="Parameter", values="Wert"
+    ).reset_index()
+    df_luft_wide.columns.name = None
+    df_luft_wide = df_luft_wide.rename(columns={"Datum": "timestamp"})
+
+    # Wide-Format-Datei speichert: überschreibt den Hauptroh-Pfad
+    df_luft_wide.to_csv("data/raw/luftqualitaet_2023_roh.csv", index=False)
+    print(f"  Wide-Format gespeichert: {df_luft_wide.shape}")
+    print(f"  Spalten: {list(df_luft_wide.columns)}")
+    print(f"  Erste Zeile:\n{df_luft_wide.head(1).to_string()}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -165,8 +212,8 @@ print("ZUSAMMENFASSUNG – Datenbeschaffung")
 print("=" * 60)
 
 quellen = {
-    "Luftqualität (AWEL)": {
-        "df": df_luft_raw,
+    "Luftqualität (AWEL, Wide-Format)": {
+        "df": df_luft_wide,
         "Quelle": "OGD Stadt Zürich",
         "Lizenz": "Open Government Data (OGD)",
         "Format": "CSV, stündlich",

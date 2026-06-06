@@ -26,6 +26,7 @@ from pathlib import Path
 from datetime import datetime
 from io import StringIO
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from plot_config import finde_schadstoff_cols
 
 # ─────────────────────────────────────────────────────────────
 # KONFIGURATION – hier anpassen falls nötig
@@ -210,8 +211,8 @@ def phase3_bereinigung(df_luft, df_wetter):
 
     # Zeitstempel parsen
     dl.rename(columns={dl.columns[0]: "timestamp"}, inplace=True)
-    dl["timestamp"] = pd.to_datetime(dl["timestamp"])
-    dw["Datum"]     = pd.to_datetime(dw["Datum"])
+    dl["timestamp"] = pd.to_datetime(dl["timestamp"], utc=True).dt.tz_convert(None)
+    dw["Datum"]     = pd.to_datetime(dw["Datum"],     utc=True).dt.tz_convert(None)
 
     # Duplikate
     for df, col in [(dl, "timestamp"), (dw, "Datum")]:
@@ -272,8 +273,8 @@ def phase4_transformation(dl, dw):
     t = phase_start(4, "Datentransformation & Merge")
 
     # Zeitstempel vereinheitlichen
-    dl["timestamp"] = pd.to_datetime(dl["timestamp"]).dt.floor("h")
-    dw["Datum"]     = pd.to_datetime(dw["Datum"]).dt.floor("h")
+    dl["timestamp"] = pd.to_datetime(dl["timestamp"], utc=True).dt.tz_convert(None).dt.floor("h")
+    dw["Datum"]     = pd.to_datetime(dw["Datum"],     utc=True).dt.tz_convert(None).dt.floor("h")
 
     def setze_tz(s):
         if s.dt.tz is not None:
@@ -407,11 +408,7 @@ def phase6_visualisierung(df):
     t = phase_start(6, "Visualisierung")
     Path("output/plots").mkdir(parents=True, exist_ok=True)
 
-    schadstoff_cols = [c for c in df.columns
-                       if any(x in c.upper()
-                              for x in ["NO2","NO","O3","PM10","PM2"])
-                       and not any(s in c for s in
-                                   ["_missing","_std","_norm","kategorie"])]
+    schadstoff_cols = finde_schadstoff_cols(df)
     wetter_plot = [c for c in ["temperature_2m","precipitation",
                                "wind_speed_10m","relative_humidity_2m",
                                "surface_pressure","sonnenschein_h"]
@@ -658,7 +655,7 @@ if __name__ == "__main__":
         if args.ab_phase > 4 and 4 not in phasen:
             try:
                 df_final = pd.read_csv("data/processed/datensatz_final.csv")
-                df_final["timestamp"] = pd.to_datetime(df_final["timestamp"])
+                df_final["timestamp"] = pd.to_datetime(df_final["timestamp"], utc=True).dt.tz_convert(None)
                 log("Finaler Datensatz geladen", "OK")
             except FileNotFoundError:
                 log("Finaler Datensatz fehlt – starte ab Phase 4", "WARN")

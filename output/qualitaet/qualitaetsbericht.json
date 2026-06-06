@@ -1,35 +1,92 @@
 {
-  "erstellt": "2026-04-24T11:06:53.464794",
-  "checks": {
-    "zeitvollstaendigkeit_pct": 100.0,
-    "fehlende_werte_pct": {
-      "Standort": 0.0,
-      "Parameter": 0.0,
-      "Intervall": 0.0,
-      "Einheit": 0.0,
-      "Wert": 0.01,
-      "Status": 0.0,
-      "temperature_2m": 0.0,
-      "relative_humidity_2m": 0.0,
-      "precipitation": 0.0,
-      "wind_speed_10m": 0.0,
-      "wind_direction_10m": 0.0,
-      "surface_pressure": 0.0,
-      "cloud_cover": 0.0,
-      "sunshine_duration": 0.0,
-      "stunde": 0.0,
-      "wochentag": 0.0,
-      "monat": 0.0,
-      "jahreszeit": 0.0,
-      "ist_wochenende": 0.0,
-      "ist_rush_hour": 0.0,
-      "temp_kategorie": 0.0,
-      "regen": 0.0,
-      "wind_kategorie": 0.21,
-      "inversion_indikator": 0.0,
-      "sonnenschein_h": 0.0
+  "erstellt_am": "2026-06-06T16:30:13.375811",
+  "datensatz": "datensatz_final.csv",
+  "zeilen": 8760,
+  "spalten": 53,
+  "pruefungen": {
+    "zeitvollstaendigkeit_pct": 99.98,
+    "md5_checksum": "5daae338d8bd9c124cc0482af033eab1",
+    "groesse_mb": 5.64,
+    "fehlende_werte": {
+      "NO": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "NO2": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "O3": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "PM10": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "PM2.5": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "temperature_2m": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "precipitation": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "wind_speed_10m": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "relative_humidity_2m": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "surface_pressure": {
+        "fehlend": 0,
+        "prozent": 0.0
+      },
+      "sonnenschein_h": {
+        "fehlend": 0,
+        "prozent": 0.0
+      }
     },
-    "plausibilitaet_ok": true
-  },
-  "md5": "5eb037fba620fd9eeb0ce004319d54fc"
+    "plausibilitaet": {
+      "temperature_2m": {
+        "ist_min": -10.0,
+        "ist_max": 32.5,
+        "ok": true
+      },
+      "relative_humidity_2m": {
+        "ist_min": 26.0,
+        "ist_max": 100.0,
+        "ok": true
+      },
+      "precipitation": {
+        "ist_min": 0.0,
+        "ist_max": 8.4,
+        "ok": true
+      },
+      "wind_speed_10m": {
+        "ist_min": 0.0,
+        "ist_max": 40.9,
+        "ok": true
+      },
+      "surface_pressure": {
+        "ist_min": 932.4,
+        "ist_max": 992.8,
+        "ok": true
+      },
+      "cloud_cover": {
+        "ist_min": 0.0,
+        "ist_max": 100.0,
+        "ok": true
+      }
+    },
+    "merge_quote_pct": 100.0,
+    "zeitraum": "2023-01-01 bis 2023-12-31",
+    "snake_case_ok": false
+  }
 }

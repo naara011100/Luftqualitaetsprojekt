@@ -6,11 +6,14 @@
 # Ausführen:     python W03_bereinigung.py
 # =============================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import plot_config                # setzt rcParams global
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
 Path("output/plots").mkdir(parents=True, exist_ok=True)
@@ -25,7 +28,7 @@ print("=" * 60)
 # ─────────────────────────────────────────────────────────────
 print("\n[1/6] Rohdaten laden...")
 
-df_luft = pd.read_csv("data/raw/luftqualitaet_2023_roh.csv")
+df_luft = pd.read_csv("data/raw/luftqualitaet_2023_roh.csv", encoding="utf-8-sig", sep=",")
 zeit_col = df_luft.columns[0]
 df_luft[zeit_col] = pd.to_datetime(df_luft[zeit_col])
 df_luft = df_luft.rename(columns={zeit_col: "timestamp"})
@@ -70,12 +73,12 @@ print("\n[3/6] Physikalisch unmögliche Werte entfernen...")
 # Grenzwerte basierend auf Domänenwissen Zürich / Schweiz
 grenzwerte_luft = {
     # Spaltenname : (minimum, maximum, Einheit, Begründung)
-    # Passe Spaltennamen an deine tatsächlichen Spalten an!
-    "NO":   (0,   500,  "µg/m³", "NO kann nicht negativ sein; >500 = Messfehler"),
-    "NO2":  (0,   300,  "µg/m³", "WHO-Grenzwert 40; >300 = sicher Messfehler"),
-    "O3":   (0,   300,  "µg/m³", "Ozon >300 extrem unwahrscheinlich in CH"),
-    "PM10": (0,   500,  "µg/m³", "PM10 >500 = grober Messfehler"),
-    "PM2":  (0,   300,  "µg/m³", "PM2.5 >300 = grober Messfehler"),
+    # Spaltennamen entsprechen den Wide-Format-Spalten nach dem Pivot
+    "NO":    (0, 500,  "µg/m³", "Keine negativen Konzentrationen"),
+    "NO2":   (0, 300,  "µg/m³", "WHO-Grenzwert 40; >300 = Messfehler"),
+    "O3":    (0, 300,  "µg/m³", ">300 extrem unwahrscheinlich in CH"),
+    "PM10":  (0, 500,  "µg/m³", "PM10 >500 = grober Messfehler"),
+    "PM2.5": (0, 300,  "µg/m³", "PM2.5 >300 = grober Messfehler"),
 }
 
 grenzwerte_wetter = {
